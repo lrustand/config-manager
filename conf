@@ -1,0 +1,337 @@
+#!/bin/bash
+
+rm-config() {
+	arg=$@
+	if [[ -f "$arg" ]]; then
+		src=$(realpath -s $arg)
+		dest=$base_path/$package$src
+		if [[ -e "$dest" ]]; then
+			if [[ $dest == $(realpath $arg) ]]; then
+				echo "'$src' is a symlink to '$dest'"
+				echo "This is good, now we can do stuff"
+				ls -lh --color=always $src
+				ls -lh --color=always $dest
+				while true; do
+					echo -n "What do you want, (D)elete both, (M)ove out of config, (S)kip? "
+					read ans
+					if [[ $ans =~ ^[Dd]$ ]]; then
+						echo "Delete '$src' and '$dest'"
+						rm "$src" "$dest"
+						break
+					elif [[ $ans =~ ^[Mm]$ ]]; then
+						echo "Move '$dest' to '$src'"
+						mv "$dest" "$src"
+						break
+					elif [[ $ans =~ ^[Ss]$ ]]; then
+						echo "Skipping '$src'"
+						break
+					else
+						echo "Wrong answer"
+					fi
+				done
+			else
+				echo "Doesnt look like '$arg' belongs to config"
+				echo "Real path: $(realpath $arg)"
+				#check if $dest exist anyway
+				#and then ask to do something with it
+			fi
+		else
+			echo "'$dest' does not exist"
+		fi
+	elif [[ -d "$arg" ]]; then
+		echo "'$arg' is a directory. This is not yet implemented"
+	else
+		echo "'$arg' doesnt exist"
+	fi
+}
+
+# Case 1: source is a file/dir under $CONFIGPATH
+#       - Take care of all symlinks that point to source
+# DONE: source is a symlink to a file/dir under $CONFIGPATH
+# Case 3: source is a parent dir to a symlink
+# Case 4: source is a file/dir not already managed by CONFIG
+#       - Ask what to do
+# DONE: source does not exist
+cpmvln-config() {
+	src=$(realpath -s $1)
+	dest=$(realpath -s $2)
+	cpmv=$3
+	conf_src=$base_path/$package$src
+	conf_dest=$base_path/$package$dest
+
+	#Check if source file exists in both places
+	if [ -f "$src" ] && [ -f "$conf_src" ]; then
+		echo "Source file exists both places. This is good"
+	elif [ -f "$src" ]; then
+		echo "$1 is not part of config"
+		while true; do
+			echo -n "Do you want to add it? "
+			read yn
+			if [[ $yn =~ ^[Yy]$ ]]; then
+				add-to-config $src
+				break
+			elif [[ $yn =~ ^[Nn]$ ]]; then
+				return
+			else
+				echo "Wrong answer"
+			fi
+		done
+	elif [ -f "$conf_src" ]; then
+		echo "'$1' does not exist, but it is part of config."
+		echo "Thats okay!"
+	else
+		if [ -d "$src" ]; then
+			echo "Thats a directory. No dice yet, sorry"
+		else
+			echo "Neither '$1' or '$conf_src' exists!"
+		fi
+		exit 1
+	fi
+
+	#Check if $1 is a symlink to $conf_src
+	if [ "$(realpath $src)" == "$conf_src" ]; then
+		echo "'$1' is a symlink to '$conf_src', this is good"
+	else
+		echo "Mismatch between '$1' and '$conf_src'!"
+		echo "Not linking to config"
+		exit 1
+	fi
+
+	#Check if $dest or $conf_dest exists
+	if [ -e $dest ] && [ ! -d $dest ]; then
+		echo "'$dest' already exists!"
+		exit 1
+	elif [ -d $dest ]; then
+		dest="$dest/$(basename $src)"
+		if [ -e "$dest" ]; then
+			echo "'$dest' already exists!"
+			exit 1
+		fi
+	fi
+	if [ -e $conf_dest ]; then
+		if [ -d $dest ] && [ ! -e "$dest/$(basename $src)" ]; then
+			dest="$dest/$(basename $src)"
+		else
+			echo "'$dest' already exists!"
+			exit 1
+		fi
+	fi
+
+	#Move $conf_src to $conf_dest
+	#Then delete $src and link file to new location
+	if [ "$3" == "mv" ]; then
+		mv "$conf_src" "$conf_dest"
+		rm "$src"
+	elif [ "$3" == "cp" ]; then
+		cp "$conf_src" "$conf_dest"
+	elif [ "$3" == "ln" ]; then
+		ln -s "$conf_src" "$conf_dest"
+	elif [ -z "$3" ]; then
+		echo "Internal error: cpmvln-config takes 3 arguments"
+		exit 1
+	else
+		echo "Internal error: cpmvln-config unknown argument '$3'"
+		exit 1
+	fi
+	ln -s "$conf_dest" "$dest"
+}
+
+add-to-config() {
+    arg=$@
+	src=$(realpath -s $arg)
+	if [[ "$src" =~ ^$base_path ]]; then
+		echo "Thats weird..."
+		echo "You were trying to add '$src'"
+		echo "But that is a path already under the base config path"
+		exit 1
+	elif [[ -f "$src" ]]; then
+		dest=$base_path/$package$src
+		cont=true
+		if [[ -e "$dest" ]]; then
+			echo "'$dest' already exists!"
+			if [ $batch = true ]; then
+				cont=false
+			elif [ $force = true ]; then
+				cont=true
+			else
+				while true; do
+					echo -n "Replace? "
+					read yn
+					case $yn in
+						[Yy]* ) break;;
+						[Nn]* ) cont=false; break;;
+						* ) echo "Please answer yes or no.";;
+					esac
+				done
+			fi
+		fi
+		if $cont; then
+			mkdir -p $(dirname $dest)
+			cp -L $src $dest \
+			&& rm $arg \
+			&& ln -s $dest $src \
+			&& echo "'$src' added successfully"
+		else
+			echo "OK, not doing anything then"
+		fi
+	elif [[ -d "$arg" ]]; then
+		echo "'$arg' is a directory"
+		if [ $batch = true ] || [ $force = true ]; then
+			while true; do
+				echo -n "Link whole (D)ir, (A)ll files in dir, or (P)ick individual files? "
+				read ans
+				files=
+				if [[ $ans =~ ^[Dd]$ ]]; then
+					echo "This cant be done in the same folder structure"
+					echo "It needs a whole new data structure."
+					echo "Think about it."
+					#mv -i $src $(dirname $dest) \
+					#	&& ln -s $dest $(dirname $src)/. \
+					#	&& echo "Done"
+					break
+				elif [[ $ans =~ ^[Aa]$ ]]; then
+					echo "Linking all files"
+					files=$(find $arg -type f)
+					break
+				elif [[ $ans =~ ^[Pp]$ ]]; then
+					echo "Select files with <Tab>"
+					files=$(find $arg -type f | fzf -m --reverse --height 95%)
+					break
+				else
+					echo "Wrong answer"
+				fi
+			done
+		else
+			files=$(find $arg -type f)
+		fi
+		for f in $files ; do
+			add-to-config "$f"
+		done
+	else
+		echo "'$arg' not found"
+	fi
+}
+
+printhelp() {
+	echo "Usage: $(basename $0) add [OPTION]... [-p PACKAGE] [FILE]... "
+	echo "  Or:  $(basename $0) rm [OPTION]... [-p PACKAGE] [FILE]... "
+	echo "  Or:  $(basename $0) mv [OPTION]... [-p PACKAGE] [SRC]... [DEST]"
+	echo
+	echo "Currently unimplemented:"
+	#echo "       $(basename $0) cp [OPTION]... [SRC]... [DEST]"
+	echo "       $(basename $0) (un/re)install [OPTION]... [PACKAGE]..."
+	echo
+	echo "Options:"
+	echo "  -b, --batch              don't prompt for any user input, no overwriting"
+	echo "  -f, --force              same as --batch, but overwrites all conflictng files"
+	echo "  -p, --package            specify which package to operate on. If not specified,"
+	echo "                             read CONF_DEFAULT_PACKAGE"
+	echo "  -d, --dry-run            print what would have been done, but don't do anything"
+	echo "  -v, --verbose            verbose output"
+	echo "  -q, --quiet              suppress all output"
+	echo "  -h, --help               print this help"
+	echo
+	echo "Environment variables:"
+	echo "  CONF_BASE_PATH           defaults to '/config'"
+	echo "  CONF_DEFAULT_PACKAGE     defaults to 'conf'"
+}
+
+# Check for at least one argument
+if [ -n "$1" ]; then
+	cmd="$1"
+	shift
+else
+	printhelp
+	exit 1
+fi
+
+# Set up default values
+if [ ! -n "$CONF_BASE_PATH" ]; then
+	CONF_BASE_PATH="/config"
+fi
+base_path=$CONF_BASE_PATH
+if [ ! -n "$CONF_DEFAULT_PACKAGE" ]; then
+	CONF_DEFAULT_PACKAGE="conf"
+fi
+package=$CONF_DEFAULT_PACKAGE
+
+force=false
+batch=false
+verbose=false
+quiet=false
+
+
+# Parse commandline arguments
+while [[ $1 =~ ^- ]]; do
+	case "$1" in
+		-p|--package)
+			package="$2"
+			shift
+			;;
+		-f|--force)
+			echo "Force"
+			force=true
+			;;
+		-b|--batch)
+			echo "Batch"
+			batch=true
+			;;
+		-d|--dry-run)
+			stow_opts="$stow_opts -n -v"
+			;;
+		-v|--verbose)
+			echo "Verbose"
+			verbose=true
+			stow_opts="$stow_opts -v"
+			;;
+		-h|--help)
+			printhelp
+			exit 0
+			;;
+		*)
+			echo "Unrecognized option $1"
+			exit 1
+			;;
+	esac
+	shift
+done
+args=
+while [ -n "$2" ]; do
+	args="$args $1"
+	shift
+done
+last=$1
+
+[ -z "$last" ] && echo "Too few arguments"
+
+
+# Handle different commands
+if [[ "$cmd" =~ ^(add|rm)$ ]]; then
+	args="$args $last"
+	for src in $args ; do
+		[ "$cmd" == "rm" ] && rm-config "$src"
+		[ "$cmd" == "add" ] && add-to-config "$src"
+	done
+elif [[ "$cmd" =~ ^(mv|cp|ln)$ ]]; then
+	[ -z "$args" ] && echo "Too few arguments"
+	dest="$last"
+	for src in $args ; do
+		[ "$cmd" == "ln" ] && cpmvln-config "$src" "$dest" "ln"
+		[ "$cmd" == "cp" ] && cpmvln-config "$src" "$dest" "cp"
+		[ "$cmd" == "mv" ] && cpmvln-config "$src" "$dest" "mv"
+	done
+elif [[ "$cmd" =~ ^(un|)install$ ]]; then
+	args="$args $last"
+	if [[ "$cmd" =~ ^un ]]; then
+		stow_opts="$stow_opts -D"
+	else
+		stow_opts="$stow_opts -R"
+	fi
+	for p in $args ; do
+		stow -t / -d $base_path --no-folding $stow_opts $p
+	done
+else
+	echo "Unknown command '$cmd'"
+fi
+
+exit 0
